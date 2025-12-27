@@ -1,12 +1,13 @@
+use std::collections::HashMap;
 use std::thread;
 
 use gdk4::{
-    prelude::{ObjectExt},
+    prelude::{Cast, ObjectExt},
 };
 use gtk::prelude::{ApplicationExt, BoxExt, GtkWindowExt, ToggleButtonExt, WidgetExt};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use relm4::{gtk, ComponentParts, ComponentSender, RelmWidgetExt, SimpleComponent};
-use tracing::info;
+use tracing::{error, info};
 
 use crate::{
     layout::parse::{KeyType, LayoutDefinition},
@@ -19,12 +20,14 @@ use super::components::ButtonEX;
 
 pub struct UIModel {
     keyboard_handle: Box<dyn KeyboardHandle>,
+    buttons: HashMap<u16, Vec<gtk::Widget>>,
 }
 
 #[derive(Debug)]
 pub enum UIMessage {
     ButtonPress(u16),
     ButtonRelease(u16),
+    SetButtonHighlight(u16, i32),
     ModPress(u16),
     ModRelease(u16),
     LockPress(u16),
@@ -72,6 +75,29 @@ impl SimpleComponent for UIModel {
             }
         });
 
+        if let Some(input_device_path) = handle.3.input {
+            let message_sender = sender.clone();
+            if let Ok(mut device) = evdev::Device::open(input_device_path)
+                .inspect_err(|e| error!("Error opening input device path: {e}"))
+            {
+                thread::spawn(move || loop {
+                    if let Ok(events) = device
+                        .fetch_events()
+                        .inspect_err(|e| error!("Error reading input events: {e}"))
+                    {
+                        for event in events {
+                            if let evdev::EventSummary::Key(event, _, _) = event.destructure() {
+                                message_sender.input(UIMessage::SetButtonHighlight(
+                                    event.code().code(),
+                                    event.value(),
+                                ));
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
         window.init_layer_shell();
         window.set_namespace(Some("wkeys"));
         window.set_layer(Layer::Overlay);
@@ -88,8 +114,9 @@ impl SimpleComponent for UIModel {
             window.set_anchor(anchor, state);
         }
 
-        let model = UIModel {
+        let mut model = UIModel {
             keyboard_handle: handle.0,
+            buttons: HashMap::new(),
         };
 
         // window.emit_enable_debugging(true);
@@ -116,7 +143,7 @@ impl SimpleComponent for UIModel {
                 let width =
                     (key.width.unwrap_or(1.0) * f32::from(geometry_unit as u16)).round() as i32;
 
-                match key.key_type() {
+                let button: gtk::Widget = match key.key_type() {
                     KeyType::Mod => {
                         let toggle = gtk::ToggleButton::builder()
                             .label(format!(
@@ -137,7 +164,7 @@ impl SimpleComponent for UIModel {
                             }
                         });
 
-                        row_container.append(&toggle);
+                        toggle.upcast()
                     }
                     KeyType::Lock => {
                         let toggle = gtk::ToggleButton::builder()
@@ -159,14 +186,13 @@ impl SimpleComponent for UIModel {
                             }
                         });
 
-                        row_container.append(&toggle);
+                        toggle.upcast()
                     }
                     KeyType::Normal => {
-
                         if scan_code == 0 {
                             let label = Label::default();
                             label.set_width_request(width);
-                            row_container.append(&label);
+                            label.upcast()
                         }
                         else {
                             let button = ButtonEX::default();
@@ -189,10 +215,18 @@ impl SimpleComponent for UIModel {
                                 None
                             });
 
-                            row_container.append(&button);
+                            button.upcast()
                         }
                     }
-                }
+                };
+
+                row_container.append(&button);
+
+                model
+                    .buttons
+                    .entry(scan_code)
+                    .or_default()
+                    .push(button.upcast());
             });
 
             container.append(&row_container);
@@ -212,6 +246,13 @@ impl SimpleComponent for UIModel {
             UIMessage::ButtonRelease(scan_code) => {
                 self.keyboard_handle
                     .key_release(evdev::KeyCode::new(scan_code));
+            }
+            UIMessage::SetButtonHighlight(scan_code, value) => {
+                if let Some(buttons) = self.buttons.get(&scan_code) {
+                    for button in buttons {
+                        button.set_css_classes(if value == 0 { &[] } else { &["focus"] });
+                    }
+                }
             }
             UIMessage::ModPress(scan_code) => {
                 self.keyboard_handle

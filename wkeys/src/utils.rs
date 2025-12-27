@@ -19,4 +19,7 @@ pub struct ProgramArgs {
 
     #[arg(short = 'i', long, default_value_t = 64, help = "Height of a key")]
     pub height: i32,
+
+    #[arg(short = 'd', long, help = "Input device to show key events from")]
+    pub input: Option<std::path::PathBuf>,
 }

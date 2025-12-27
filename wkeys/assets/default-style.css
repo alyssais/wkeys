@@ -26,3 +26,7 @@ button:active {
 button:checked {
     background-color: rgb(255, 255, 255);
 }
+
+button.focus {
+    background-color: red;
+}
